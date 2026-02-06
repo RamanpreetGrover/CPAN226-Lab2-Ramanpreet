@@ -1,13 +1,13 @@
-# This program was modified by Ramanpreet Grover / N01698437
-
 import socket
 import argparse
 import time
 import os
+import struct  # IMPROVEMENT: used to pack sequence numbers into packets
+
 
 def run_client(target_ip, target_port, input_file):
-    # 1. Create a UDP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(0.5)  # IMPROVEMENT: timeout for ACK reception
     server_address = (target_ip, target_port)
 
     print(f"[*] Sending file '{input_file}' to {target_ip}:{target_port}")
@@ -17,24 +17,33 @@ def run_client(target_ip, target_port, input_file):
         return
 
     try:
+        seq_num = 0  # IMPROVEMENT: initialize sequence number
+
         with open(input_file, 'rb') as f:
             while True:
-                # Read a chunk of the file
-                chunk = f.read(4096) # 4KB chunks
-                
+                chunk = f.read(4096)
                 if not chunk:
-                    # End of file reached
                     break
 
-                # Send the chunk
-                sock.sendto(chunk, server_address)
-                
-                # Optional: Small sleep to prevent overwhelming the OS buffer locally
-                # (In a perfect world, we wouldn't need this, but raw UDP is fast!)
-                time.sleep(0.001)
+                packet = struct.pack('!I', seq_num) + chunk  # IMPROVEMENT: add sequence number
 
-        # Send empty packet to signal "End of File"
-        sock.sendto(b'', server_address)
+                # Stop-and-wait: resend until ACK received
+                while True:
+                    sock.sendto(packet, server_address)  # IMPROVEMENT: send packet
+                    try:
+                        ack, _ = sock.recvfrom(4)  # IMPROVEMENT: wait for ACK
+                        ack_seq = struct.unpack('!I', ack)[0]
+
+                        if ack_seq == seq_num:
+                            break  # IMPROVEMENT: correct ACK received
+                    except socket.timeout:
+                        continue  # IMPROVEMENT: retransmit on timeout
+
+                seq_num += 1  # IMPROVEMENT: move to next packet
+
+        # Send EOF packet
+        eof_packet = struct.pack('!I', seq_num)  # IMPROVEMENT: EOF packet
+        sock.sendto(eof_packet, server_address)
         print("[*] File transmission complete.")
 
     except Exception as e:
@@ -42,11 +51,12 @@ def run_client(target_ip, target_port, input_file):
     finally:
         sock.close()
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Naive UDP File Sender")
-    parser.add_argument("--target_ip", type=str, default="127.0.0.1", help="Destination IP (Relay or Server)")
-    parser.add_argument("--target_port", type=int, default=12000, help="Destination Port")
-    parser.add_argument("--file", type=str, required=True, help="Path to file to send")
+    parser = argparse.ArgumentParser(description="Reliable UDP File Sender")
+    parser.add_argument("--target_ip", type=str, default="127.0.0.1")
+    parser.add_argument("--target_port", type=int, default=12001)
+    parser.add_argument("--file", type=str, required=True)
     args = parser.parse_args()
 
     run_client(args.target_ip, args.target_port, args.file)
